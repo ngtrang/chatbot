@@ -1,56 +1,95 @@
-import os, sys
+import os
+import sys
+import json
+import chatbot_rus
+from datetime import datetime
+
+import requests
 from flask import Flask, request
-from utils import wit_response, get_news_elements
-from pymessenger import Bot
 
 app = Flask(__name__)
-
-PAGE_ACCESS_TOKEN = "EAAZAQIuo9HbIBALfaqQ9xEG5vEReZBOU8lZCZBE5vQFzBNNOZBPeMzdb3yjTE49YnyNE5ke9yiE0jBZCLmAn9fJCKKzH9jB1ujtiDzyJZCl7ZAZBHYRIERiGfcv3mOlqxB1fPmL3FE8fZBfTK385PBtYcIQPDKcOPTFzgWJqUhoRonLAZDZD"
-
-bot = Bot(PAGE_ACCESS_TOKEN)
 
 
 @app.route('/', methods=['GET'])
 def verify():
-	# Webhook verification
+    # when the endpoint is registered as a webhook, it must echo back
+    # the 'hub.challenge' value it receives in the query arguments
     if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge"):
-        if not request.args.get("hub.verify_token") == "hello":
+        if not request.args.get("hub.verify_token") == os.environ["VERIFY_TOKEN"]:
             return "Verification token mismatch", 403
         return request.args["hub.challenge"], 200
+
     return "Hello world", 200
 
 
 @app.route('/', methods=['POST'])
 def webhook():
-	data = request.get_json()
-	log(data)
 
-	if data['object'] == 'page':
-		for entry in data['entry']:
-			for messaging_event in entry['messaging']:
+    # endpoint for processing incoming messaging events
 
-				# IDs
-				sender_id = messaging_event['sender']['id']
-				recipient_id = messaging_event['recipient']['id']
+    data = request.get_json()
+    log(data)  # you may not want to log every incoming message in production, but it's good for testing
 
-				if messaging_event.get('message'):
-					# Extracting text message
-					if 'text' in messaging_event['message']:
-						messaging_text = messaging_event['message']['text']
-					else:
-						messaging_text = 'no text'
+    if data["object"] == "page":
 
-					categories = wit_response(messaging_text)
-					elements = get_news_elements(categories)
-					bot.send_generic_message(sender_id, elements)
+        for entry in data["entry"]:
+            for messaging_event in entry["messaging"]:
 
-	return "ok", 200
+                if messaging_event.get("message"):  # someone sent us a message
+
+                    sender_id = messaging_event["sender"]["id"]        # the facebook ID of the person sending you the message
+                    recipient_id = messaging_event["recipient"]["id"]  # the recipient's ID, which should be your page's facebook ID
+                    message_text = messaging_event["message"]["text"]  # the message's text
+                    answer = chatbot_rus.chattoBot(message_text)
+                    send_message(sender_id, "roger that!")
+
+                if messaging_event.get("delivery"):  # delivery confirmation
+                    pass
+
+                if messaging_event.get("optin"):  # optin confirmation
+                    pass
+
+                if messaging_event.get("postback"):  # user clicked/tapped "postback" button in earlier message
+                    pass
+
+    return "ok", 200
 
 
-def log(message):
-	print(message)
-	sys.stdout.flush()
+def send_message(recipient_id, message_text):
+
+    log("sending message to {recipient}: {text}".format(recipient=recipient_id, text=message_text))
+
+    params = {
+        "access_token": os.environ["PAGE_ACCESS_TOKEN"]
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    data = json.dumps({
+        "recipient": {
+            "id": recipient_id
+        },
+        "message": {
+            "text": message_text
+        }
+    })
+    r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
+    if r.status_code != 200:
+        log(r.status_code)
+        log(r.text)
 
 
-if __name__ == "__main__":
-	app.run(debug = True, port = 80)
+def log(msg, *args, **kwargs):  # simple wrapper for logging to stdout on heroku
+    try:
+        if type(msg) is dict:
+            msg = json.dumps(msg)
+        else:
+            msg = unicode(msg).format(*args, **kwargs)
+        print (u"{}: {}".format(datetime.now(), msg))
+    except UnicodeEncodeError:
+        pass  # squash logging errors in case of non-ascii text
+    sys.stdout.flush()
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
